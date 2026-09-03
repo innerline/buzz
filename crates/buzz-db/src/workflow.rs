@@ -791,6 +791,57 @@ pub async fn delete_workflow_for_owner(
     }
 }
 
+// -- Workflow Deletion Tombstones ---------------------------------------------
+
+/// Record a deletion tombstone for a workflow coordinate.
+///
+/// Any later kind:30620 definition event for this (community, workflow) pair
+/// is rejected by the ingest path instead of silently re-upserting the
+/// `workflows` row. Without this, `workflows update` on a deleted workflow
+/// resurrects it (update-after-delete resurrection bug, 2026-09-03).
+///
+/// Idempotent: re-deleting an already-tombstoned workflow keeps the original
+/// tombstone (first deletion timestamp is authoritative).
+pub async fn insert_workflow_deletion_tombstone(
+    pool: &PgPool,
+    community_id: CommunityId,
+    workflow_id: Uuid,
+    owner_pubkey: &[u8],
+    deleted_by: &[u8],
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO workflow_deletion_tombstones \
+         (community_id, workflow_id, owner_pubkey, deleted_by) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (community_id, workflow_id) DO NOTHING",
+    )
+    .bind(community_id.as_uuid())
+    .bind(workflow_id)
+    .bind(owner_pubkey)
+    .bind(deleted_by)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Returns true when a workflow coordinate carries a deletion tombstone.
+pub async fn workflow_has_deletion_tombstone(
+    pool: &PgPool,
+    community_id: CommunityId,
+    workflow_id: Uuid,
+) -> Result<bool> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS( \
+         SELECT 1 FROM workflow_deletion_tombstones \
+         WHERE community_id = $1 AND workflow_id = $2)",
+    )
+    .bind(community_id.as_uuid())
+    .bind(workflow_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(exists)
+}
+
 // -- Workflow Run CRUD --------------------------------------------------------
 
 /// Insert a new workflow run. Returns the new run's UUID.

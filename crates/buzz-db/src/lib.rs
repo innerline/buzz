@@ -4057,6 +4057,36 @@ impl Db {
         workflow::delete_workflow_for_owner(&self.pool, community_id, id, owner_pubkey).await
     }
 
+    /// Record a deletion tombstone so later definition events for the same
+    /// workflow are rejected instead of resurrecting it.
+    #[datastore_span(name = "insert_workflow_deletion_tombstone", system = "postgresql")]
+    pub async fn insert_workflow_deletion_tombstone(
+        &self,
+        community_id: CommunityId,
+        workflow_id: Uuid,
+        owner_pubkey: &[u8],
+        deleted_by: &[u8],
+    ) -> Result<()> {
+        workflow::insert_workflow_deletion_tombstone(
+            &self.pool,
+            community_id,
+            workflow_id,
+            owner_pubkey,
+            deleted_by,
+        )
+        .await
+    }
+
+    /// Check whether a workflow coordinate carries a deletion tombstone.
+    #[datastore_span(name = "workflow_has_deletion_tombstone", system = "postgresql")]
+    pub async fn workflow_has_deletion_tombstone(
+        &self,
+        community_id: CommunityId,
+        workflow_id: Uuid,
+    ) -> Result<bool> {
+        workflow::workflow_has_deletion_tombstone(&self.pool, community_id, workflow_id).await
+    }
+
     /// Find a workflow by owner pubkey and name within a community. Used for
     /// NIP-09 a-tag deletion where the d-tag is the workflow name (not UUID).
     #[datastore_span(name = "find_workflow_by_owner_and_name", system = "postgresql")]

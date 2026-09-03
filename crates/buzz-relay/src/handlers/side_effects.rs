@@ -2171,6 +2171,24 @@ async fn handle_a_tag_deletion(
                     state
                         .workflow_engine
                         .invalidate_channel_workflows(tenant.community(), channel_id);
+                    // Deletion is final: tombstone the coordinate so a later
+                    // 30620 def event (e.g. `workflows update`) cannot
+                    // resurrect the row (update-after-delete bug, 2026-09-03).
+                    if let Err(e) = state
+                        .db
+                        .insert_workflow_deletion_tombstone(
+                            tenant.community(),
+                            wf_id,
+                            &actor_bytes,
+                            &actor_bytes,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            workflow_id = %wf_id,
+                            "failed to record workflow deletion tombstone: {e}"
+                        );
+                    }
                 }
                 tracing::info!(workflow_id = %wf_id, "Workflow deleted via NIP-09 a-tag (UUID)");
             } else {
@@ -2192,6 +2210,22 @@ async fn handle_a_tag_deletion(
                             state
                                 .workflow_engine
                                 .invalidate_channel_workflows(tenant.community(), channel_id);
+                            // Same tombstone as the UUID arm above.
+                            if let Err(e) = state
+                                .db
+                                .insert_workflow_deletion_tombstone(
+                                    tenant.community(),
+                                    wf.id,
+                                    &actor_bytes,
+                                    &actor_bytes,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    workflow_id = %wf.id,
+                                    "failed to record workflow deletion tombstone: {e}"
+                                );
+                            }
                         }
                         tracing::info!(workflow_id = %wf.id, name = d_tag, "Workflow deleted via NIP-09 a-tag (name)");
                     }

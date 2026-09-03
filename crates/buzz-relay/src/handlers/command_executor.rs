@@ -729,6 +729,23 @@ async fn handle_workflow_def(
     let workflow_id = Uuid::parse_str(&workflow_id_str)
         .map_err(|_| IngestError::Rejected("invalid: bad workflow_id format".into()))?;
 
+    // Tombstone guard: NIP-09 deletion is final for this coordinate. Any
+    // later 30620 def event — including `workflows update` — is rejected
+    // rather than re-upserting the `workflows` row. Without this check an
+    // update resurrects a deleted workflow (2026-09-03). Recreating the
+    // workflow requires a new id, which `workflows create` always generates.
+    if state
+        .db
+        .workflow_has_deletion_tombstone(tenant.community(), workflow_id)
+        .await
+        .map_err(|e| IngestError::Internal(format!("error: tombstone check: {e}")))?
+    {
+        return Err(IngestError::Rejected(
+            "invalid: workflow was deleted; publish a new workflow with a new id to replace it"
+                .into(),
+        ));
+    }
+
     // 2. Validate caller has channel access (minimum: is a member)
     let is_member = state
         .is_member_cached(tenant.community(), channel_id, &self_bytes)
