@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use crate::app_state::AppState;
-use crate::relay::{relay_api_base_url_with_override, relay_ws_url_with_override};
+use crate::relay::{pairing_payload_relay_url, relay_ws_url_with_override};
 
 #[derive(Serialize, Clone)]
 struct PairingSasPayload {
@@ -128,7 +128,7 @@ async fn start_pairing_session(
     *pairing.payload.lock().map_err(|e| e.to_string())? = None;
 
     let ws_url = relay_ws_url_with_override(&state);
-    let http_url = relay_api_base_url_with_override(&state);
+    let http_url = pairing_payload_relay_url(&state);
     let pairing_relay_url = resolve_pairing_relay_url(&ws_url, probe_pairing_relay(&ws_url).await)?;
     let (session, qr_payload) = PairingSession::new_source(pairing_relay_url.clone());
     let mut qr_uri = encode_qr(&qr_payload);

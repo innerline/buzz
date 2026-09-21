@@ -67,6 +67,27 @@ pub fn relay_api_base_url_with_override(state: &AppState) -> String {
     }
 }
 
+/// Base URL advertised to a newly paired phone in the SendIdentity payload.
+///
+/// The workspace relay (and its http base) is tailnet-internal: a phone outside
+/// that trust plane can neither reach nor trust it. `BUZZ_PAIRING_RELAY_HTTP`
+/// repoints ONLY the advertised payload — every desktop-side connection,
+/// including the pairing session itself, still resolves from the workspace
+/// relay, so the compiled-in webpki root store never sees the front's CA.
+pub fn pairing_payload_relay_url(state: &AppState) -> String {
+    apply_pairing_payload_override(
+        configured_env_var("BUZZ_PAIRING_RELAY_HTTP"),
+        relay_api_base_url_with_override(state),
+    )
+}
+
+/// Pure decision core of `pairing_payload_relay_url`, split out so the
+/// env-over-workspace precedence is testable without an AppState.
+fn apply_pairing_payload_override(env: Option<String>, fallback: String) -> String {
+    env.map(|base| base.trim_end_matches('/').to_string())
+        .unwrap_or(fallback)
+}
+
 /// Selects the relay a managed agent should use for a relay operation.
 ///
 /// Always the active workspace relay. The legacy per-record `relay_url` pin is

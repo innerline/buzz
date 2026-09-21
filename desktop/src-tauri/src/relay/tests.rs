@@ -2,9 +2,9 @@
 //! Extracted from `relay.rs` to keep that module under the file-size ratchet.
 
 use super::{
-    build_authenticated_relay_request, build_profile_event, classify_intercepted_response,
-    effective_agent_relay_url, extract_retry_in_hint, parse_command_response, relay_http_base_url,
-    MALFORMED_RESPONSE_MESSAGE,
+    apply_pairing_payload_override, build_authenticated_relay_request, build_profile_event,
+    classify_intercepted_response, effective_agent_relay_url, extract_retry_in_hint,
+    parse_command_response, relay_http_base_url, MALFORMED_RESPONSE_MESSAGE,
 };
 use serde::Deserialize;
 
@@ -790,5 +790,24 @@ fn profile_event_rejects_invalid_auth_tag() {
     assert!(
         result.unwrap_err().contains("verification failed"),
         "error message should mention verification failure"
+    );
+}
+
+#[test]
+fn pairing_payload_env_overrides_workspace_base() {
+    assert_eq!(
+        apply_pairing_payload_override(
+            Some("https://front.example:8443/".to_string()),
+            "http://192.168.1.10:3000".to_string()
+        ),
+        "https://front.example:8443"
+    );
+}
+
+#[test]
+fn pairing_payload_falls_back_to_workspace_base_without_env() {
+    assert_eq!(
+        apply_pairing_payload_override(None, "http://192.168.1.10:3000".to_string()),
+        "http://192.168.1.10:3000"
     );
 }
