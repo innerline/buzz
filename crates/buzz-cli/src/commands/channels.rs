@@ -18,11 +18,31 @@ use crate::error::CliError;
 use crate::validate::{parse_uuid, read_or_stdin, validate_hex64, validate_uuid};
 
 fn extract_channel_metadata(e: &serde_json::Value) -> serde_json::Value {
+    // `archived` mirrors ChannelSummary::from_event: an ["archived", "true"]
+    // tag on the kind:39000 metadata event. Note for consumers: on archived
+    // channels the event `created_at` is the last record publish (the relay
+    // republishes the metadata event on archive), not the channel's original
+    // creation time.
+    let archived = e
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .map(|tags| {
+            tags.iter().any(|tag| {
+                tag.as_array()
+                    .map(|a| {
+                        a.first().and_then(|v| v.as_str()) == Some("archived")
+                            && a.get(1).and_then(|v| v.as_str()) == Some("true")
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
     serde_json::json!({
         "channel_id": extract_d_tag(e),
         "name": extract_tag_value(e, "name"),
         "description": extract_tag_value(e, "about"),
         "created_at": e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0),
+        "archived": archived,
     })
 }
 
@@ -31,6 +51,7 @@ pub async fn cmd_list_channels(
     visibility: Option<&str>,
     member: Option<bool>,
     limit: Option<u32>,
+    include_archived: bool,
     format: &crate::OutputFormat,
 ) -> Result<(), CliError> {
     let effective_limit = limit.unwrap_or(500);
@@ -95,6 +116,11 @@ pub async fn cmd_list_channels(
             }
         })
         .map(extract_channel_metadata)
+        // Parity with `channels search`: archived channels are hidden unless
+        // --include-archived is passed. They still resolve via `channels get`.
+        .filter(|c| {
+            include_archived || !c.get("archived").and_then(|v| v.as_bool()).unwrap_or(false)
+        })
         .collect();
     let output = match format {
         crate::OutputFormat::Compact => {
@@ -1871,9 +1897,18 @@ pub async fn dispatch(
             visibility,
             member,
             limit,
+            include_archived,
         } => {
             let vis_str = visibility.as_ref().map(|v| v.to_string());
-            cmd_list_channels(client, vis_str.as_deref(), Some(member), limit, format).await
+            cmd_list_channels(
+                client,
+                vis_str.as_deref(),
+                Some(member),
+                limit,
+                include_archived,
+                format,
+            )
+            .await
         }
         ChannelsCmd::Get { channel } => cmd_get_channel(client, &channel).await,
         ChannelsCmd::Search {
