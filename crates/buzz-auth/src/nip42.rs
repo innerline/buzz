@@ -16,7 +16,7 @@ use crate::error::AuthError;
 /// Uses the `url` crate for proper parsing rather than string manipulation.
 /// Normalizes localhost variants to 127.0.0.1 and strips trailing slashes
 /// (the `url` crate handles the latter automatically via path normalization).
-fn normalize_relay_url(raw: &str) -> String {
+pub fn normalize_relay_url(raw: &str) -> String {
     let mut parsed = match Url::parse(raw) {
         Ok(u) => u,
         Err(_) => return raw.to_string(),

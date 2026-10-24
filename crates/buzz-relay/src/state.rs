@@ -1490,7 +1490,10 @@ pub(crate) mod tests {
         build_test_state(config, pool).await
     }
 
-    async fn build_test_state(config: crate::config::Config, pool: sqlx::PgPool) -> Arc<AppState> {
+    pub(crate) async fn build_test_state(
+        config: crate::config::Config,
+        pool: sqlx::PgPool,
+    ) -> Arc<AppState> {
         let db = buzz_db::Db::from_pool(pool.clone());
         let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
             .create_pool(Some(deadpool_redis::Runtime::Tokio1))

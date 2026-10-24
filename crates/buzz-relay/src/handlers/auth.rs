@@ -135,8 +135,15 @@ pub async fn handle_auth(event: nostr::Event, conn: Arc<ConnectionState>, state:
     let auth_tag_json = extract_auth_tag_json(&event);
     let signed_auth_created_at = event.created_at.as_secs();
 
-    let relay_url =
-        crate::api::bridge::nip42_expected_relay_url(&state.config.relay_url, &conn.tenant);
+    let relay_url = crate::api::bridge::nip42_select_relay_url(
+        &state.config.relay_url,
+        &conn.tenant,
+        &state.config.nip42_alt_relay_urls,
+        event
+            .tags
+            .find(nostr::TagKind::Relay)
+            .and_then(|t| t.content()),
+    );
     let auth_svc = Arc::clone(&state.auth);
 
     // Pure NIP-42 verification — crypto only, no DB lookups.
@@ -384,8 +391,10 @@ mod tests {
     use crate::api::relay_members::MembershipDecision;
     use crate::connection::{tests::test_conn_with_auth, AuthState};
     use crate::metrics::{AuthOutcome, AuthPostTerminalState};
+    use crate::AppState;
     use metrics_util::debugging::DebugValue;
     use nostr::{EventBuilder, Keys, Kind, RelayUrl, Tag};
+    use std::sync::Arc;
     use std::time::Instant;
 
     type MetricSnapshot = Vec<(
@@ -611,6 +620,89 @@ mod tests {
                 .unwrap_or_default();
             assert_eq!(count, 1, "{} post-terminal frame", state.as_str());
         }
+    }
+
+    /// A relay state like [`crate::state::tests::test_state`] but with an
+    /// alternate NIP-42 front configured — the TLS-front deployment shape —
+    /// and a deliberately unreachable database, so the ban gate denies
+    /// deterministically (fail-closed) without any live infrastructure.
+    async fn test_state_with_alt_fronts() -> Arc<AppState> {
+        let mut config = crate::config::Config::from_env().expect("default config loads");
+        config.require_relay_membership = false;
+        config.redis_url = "redis://127.0.0.1:1".to_string();
+        config.nip42_alt_relay_urls = vec!["wss://front.example:8443".to_string()];
+        config.database_url = "postgres://buzz:buzz_dev@127.0.0.1:1/buzz".to_string();
+        config.read_database_url = None;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(100))
+            .connect_lazy(&config.database_url)
+            .expect("lazy pg pool");
+        crate::state::tests::build_test_state(config, pool).await
+    }
+
+    /// An AUTH event whose `relay` tag names a configured alternate front must
+    /// pass NIP-42 verification (the TLS-front mobile path); the identical
+    /// event against a deployment with no alternates configured must fail at
+    /// the URL check. Both states use an unreachable database, so both paths
+    /// terminate at the fail-closed ban gate AFTER the seam under test — the
+    /// terminal auth-outcome metric distinguishes them: `ban_check_error`
+    /// means verification passed (we reached the DB gate), `invalid` means
+    /// NIP-42 verification (including the relay-URL comparison) rejected it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn handler_accepts_auth_signed_against_alternate_front() {
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let challenge = "alt-front-challenge";
+        let signed_front: RelayUrl = "wss://front.example:8443".parse().expect("front url");
+
+        // Deployment WITH the alternate front configured → verification
+        // passes; the unreachable ban DB then denies fail-closed.
+        let state = test_state_with_alt_fronts().await;
+        let (conn, _rx) = test_conn_with_auth(pending(challenge));
+        crate::metrics::record_auth_attempt_started();
+        let event = EventBuilder::auth(challenge, signed_front.clone())
+            .sign_with_keys(&Keys::generate())
+            .expect("sign auth event");
+        handle_auth(event, conn.clone(), state).await;
+        assert!(matches!(conn.auth_state_snapshot(), AuthState::Failed));
+        let snapshot = snapshotter.snapshot().into_vec();
+        assert_eq!(
+            metric_counter(
+                &snapshot,
+                "buzz_auth_outcomes_total",
+                Some(AuthOutcome::BanCheckError.as_str()),
+            ),
+            1,
+            "front-signed AUTH must pass NIP-42 verification and reach the ban gate"
+        );
+
+        // Control: identical shape, no alternates configured → URL check fails
+        // inside NIP-42 verification before any DB gate is reached.
+        let state_strict = crate::state::tests::test_state_with_database_url(
+            "postgres://buzz:buzz_dev@127.0.0.1:1/buzz",
+        )
+        .await;
+        let (conn_strict, _rx_strict) = test_conn_with_auth(pending(challenge));
+        let event_strict = EventBuilder::auth(challenge, signed_front)
+            .sign_with_keys(&Keys::generate())
+            .expect("sign auth event");
+        handle_auth(event_strict, conn_strict.clone(), state_strict).await;
+        assert!(matches!(
+            conn_strict.auth_state_snapshot(),
+            AuthState::Failed
+        ));
+        let snapshot_strict = snapshotter.snapshot().into_vec();
+        assert_eq!(
+            metric_counter(
+                &snapshot_strict,
+                "buzz_auth_outcomes_total",
+                Some(AuthOutcome::Invalid.as_str()),
+            ),
+            1,
+            "strict deployment must still reject the front-signed AUTH at verification"
+        );
     }
 
     /// A verified signature followed by an unavailable restriction database

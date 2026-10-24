@@ -250,6 +250,36 @@ pub(crate) fn nip42_expected_relay_url(config_relay_url: &str, tenant: &TenantCo
     format!("{scheme}://{}", tenant.host())
 }
 
+/// Pick the relay URL a NIP-42 AUTH event should be verified against.
+///
+/// Returns the strict host-derived expectation (unchanged behavior) unless the
+/// event's signed `relay` tag exactly matches — after normalization — one of
+/// the deployment's configured alternate front URLs
+/// ([`crate::config::Config::nip42_alt_relay_urls`]), in which case that URL is
+/// returned so verification compares like-for-like. This lets clients that
+/// connect through a TLS-terminating front (signing the front's `wss://` URL)
+/// authenticate against the same relay that also serves direct `ws://` lanes,
+/// without loosening the check for anyone else: an AUTH signed for any URL not
+/// in the list still fails with `relay url mismatch`, exactly as before.
+pub(crate) fn nip42_select_relay_url(
+    config_relay_url: &str,
+    tenant: &TenantContext,
+    alt_relay_urls: &[String],
+    signed_relay_tag: Option<&str>,
+) -> String {
+    let expected = nip42_expected_relay_url(config_relay_url, tenant);
+    let Some(signed) = signed_relay_tag else {
+        return expected;
+    };
+    let signed_norm = buzz_auth::nip42::normalize_relay_url(signed);
+    for alt in alt_relay_urls {
+        if buzz_auth::nip42::normalize_relay_url(alt) == signed_norm {
+            return alt.clone();
+        }
+    }
+    expected
+}
+
 /// Extract a channel UUID from a single filter's `#h` tag.
 fn extract_channel_from_filter(filter: &nostr::Filter) -> Option<uuid::Uuid> {
     let h_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::H);
@@ -3300,6 +3330,71 @@ mod postgres_tests {
             nip42_expected_relay_url("ws://config.example", &tenant),
             "ws://host-a.example:3100",
             "ws:// dev config → ws:// URL"
+        );
+    }
+
+    /// `nip42_select_relay_url` returns the matching alternate front when the
+    /// signed `relay` tag names one, and the strict expectation in every other
+    /// case — the exact mobile-front scenario (`wss://front:8443` tag against a
+    /// `ws://…:3000` deployment) plus the no-ops (no tag, empty list, unknown
+    /// tag, normalization equivalence).
+    #[test]
+    fn nip42_select_relay_url_prefers_matching_alternate_front() {
+        let tenant = fresh_tenant("host-a.example:3000");
+        let alts = vec!["wss://front.example:8443".to_string()];
+
+        // Signed tag matches an alternate front (trailing slash normalizes).
+        assert_eq!(
+            nip42_select_relay_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                &alts,
+                Some("wss://front.example:8443/")
+            ),
+            "wss://front.example:8443",
+            "tag naming a configured front must verify against that front"
+        );
+
+        // No relay tag at all → strict expectation (verify then fails with
+        // RelayUrlMismatch inside `verify_nip42_event`, as before).
+        assert_eq!(
+            nip42_select_relay_url("ws://host-a.example:3000", &tenant, &alts, None),
+            "ws://host-a.example:3000"
+        );
+
+        // Tag naming a URL that is NOT configured → strict expectation.
+        assert_eq!(
+            nip42_select_relay_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                &alts,
+                Some("wss://other-relay.example")
+            ),
+            "ws://host-a.example:3000",
+            "unknown front must NOT be accepted"
+        );
+
+        // Empty alternate list → strict expectation even for the front URL.
+        assert_eq!(
+            nip42_select_relay_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                &[],
+                Some("wss://front.example:8443")
+            ),
+            "ws://host-a.example:3000",
+            "no configured fronts → behavior byte-identical to before"
+        );
+
+        // Tag naming the strict expectation itself → unchanged.
+        assert_eq!(
+            nip42_select_relay_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                &alts,
+                Some("ws://host-a.example:3000")
+            ),
+            "ws://host-a.example:3000"
         );
     }
 

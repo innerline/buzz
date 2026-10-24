@@ -166,6 +166,10 @@ pub struct Config {
     pub relay_url: String,
     /// Public WebSocket URL of the dedicated device-pairing relay, when configured.
     pub pairing_relay_url: Option<String>,
+    /// Alternate public front URLs (`BUZZ_NIP42_ALT_RELAY_URLS`) accepted for
+    /// the NIP-42 AUTH `relay`-tag comparison. Each entry must be a URL this
+    /// same deployment answers on (e.g. a TLS front). Empty by default.
+    pub nip42_alt_relay_urls: Vec<String>,
     /// Maximum number of concurrent WebSocket connections.
     pub max_connections: usize,
     /// Maximum number of concurrently executing message handlers.
@@ -631,6 +635,38 @@ impl Config {
                 Ok(value)
             })
             .transpose()?;
+
+        // Alternate public front URLs this deployment answers on (e.g. a
+        // TLS-terminating proxy in front of the plain-WS bind address). A
+        // NIP-42 AUTH event whose `relay` tag matches one of these URLs is
+        // verified against that URL instead of the strict host-derived
+        // expectation, so clients that legitimately connect through a front
+        // are not rejected with `relay url mismatch`. Empty (default) keeps
+        // the strict single-URL check byte-identical.
+        let nip42_alt_relay_urls = std::env::var("BUZZ_NIP42_ALT_RELAY_URLS")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| {
+                        let parsed = url::Url::parse(value).map_err(|e| {
+                            ConfigError::InvalidValue(format!(
+                                "BUZZ_NIP42_ALT_RELAY_URLS entries must be valid ws:// or wss:// URLs: {e}"
+                            ))
+                        })?;
+                        if !matches!(parsed.scheme(), "ws" | "wss") || parsed.host_str().is_none() {
+                            return Err(ConfigError::InvalidValue(
+                                "BUZZ_NIP42_ALT_RELAY_URLS entries must be valid ws:// or wss:// URLs"
+                                    .to_string(),
+                            ));
+                        }
+                        Ok(value.to_string())
+                    })
+                    .collect::<Result<Vec<String>, ConfigError>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
 
         let max_connections = std::env::var("BUZZ_MAX_CONNECTIONS")
             .ok()
@@ -1220,6 +1256,7 @@ impl Config {
             db_read_pool_size,
             relay_url,
             pairing_relay_url,
+            nip42_alt_relay_urls,
             max_connections,
             max_concurrent_handlers,
             send_buffer_size,
