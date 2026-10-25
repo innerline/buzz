@@ -86,6 +86,8 @@ pub struct CreatePersonaRequest {
     pub description: Option<String>,
     pub system_prompt: String,
     #[serde(default)]
+    pub acp_command: Option<String>,
+    #[serde(default)]
     pub runtime: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
@@ -116,6 +118,8 @@ pub struct UpdatePersonaRequest {
     #[serde(default)]
     pub description: Option<String>,
     pub system_prompt: String,
+    #[serde(default)]
+    pub acp_command: Option<String>,
     #[serde(default)]
     pub runtime: Option<String>,
     #[serde(default)]
@@ -200,6 +204,9 @@ pub struct CreateManagedAgentRequest {
     pub respond_to_allowlist: Vec<String>,
     #[serde(default)]
     pub relay_mesh: Option<RelayMeshConfig>,
+    /// Local-only thinking effort saved before the first spawn.
+    #[serde(default)]
+    pub effort_level: Option<String>,
 }
 
 /// Patch request for updating a managed agent's mutable fields.
@@ -297,6 +304,7 @@ mod tests {
             display_name: "Test".to_string(),
             avatar_url: None,
             system_prompt: "prompt".to_string(),
+            acp_command: None,
             runtime: None,
             model: None,
             provider: None,

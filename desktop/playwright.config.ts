@@ -20,8 +20,10 @@ export default defineConfig({
       name: "smoke",
       testMatch: [
         "**/smoke.spec.ts",
+        "**/mock-subscription-readiness.spec.ts",
         "**/owned-agent-discovery.spec.ts",
         "**/thread-head-stale-edit.spec.ts",
+        "**/thread-follow.spec.ts",
         "**/sidebar-offcanvas-rail.spec.ts",
         "**/tooltip-semantics.spec.ts",
         "**/search-scope-screenshots.spec.ts",
@@ -166,6 +168,7 @@ export default defineConfig({
         "**/agent-lifecycle-feedback.spec.ts",
         "**/agent-access-warning.spec.ts",
         "**/edit-agent-run-on.spec.ts",
+        "**/claude-effort-picker.spec.ts",
         "**/inbox-live-update.spec.ts",
         "**/mesh-compute.spec.ts",
         "**/observer-archive-policy.spec.ts",

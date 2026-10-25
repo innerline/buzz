@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:buzz/shared/theme/buzz_icons.dart';
 
 import '../../shared/emoji/emoji_avatar.dart';
 import '../../shared/emoji/emoji_data.dart';
@@ -85,10 +85,19 @@ class ProfileAvatarEditor extends HookConsumerWidget {
     required this.onImageCameraActiveChanged,
     this.animatedCaptureBuilder,
     this.imageCaptureBuilder,
+    this.previewKey,
+    this.previewOpacity = 1,
+    this.emptyPreview,
+    this.headerGap = Grid.xs,
   });
 
   /// The avatar URL shown until the user selects a new draft.
   final String? currentAvatarUrl;
+
+  final GlobalKey? previewKey;
+  final double previewOpacity;
+  final Widget? emptyPreview;
+  final double headerGap;
 
   /// The text initial used when [currentAvatarUrl] has no displayable image.
   final String fallbackInitial;
@@ -252,11 +261,13 @@ class ProfileAvatarEditor extends HookConsumerWidget {
             (draft as ProfileImageAvatarDraft).bytes,
           ),
         ),
+      ProfileAvatarMode.image when previewUrl == null && emptyPreview != null =>
+        SizedBox.square(dimension: _previewSize, child: emptyPreview),
       ProfileAvatarMode.image => PlayingAvatarImage(
         key: const ValueKey('avatar-editor-fixed-preview'),
         imageUrl: previewUrl,
         radius: _previewSize / 2,
-        backgroundColor: context.colors.primaryContainer,
+        backgroundColor: context.controlSurface,
         fallback: Text(
           fallbackInitial,
           style: context.textTheme.displayLarge?.copyWith(
@@ -318,7 +329,7 @@ class ProfileAvatarEditor extends HookConsumerWidget {
       reverseCurve: _exitCurve,
     );
     final appBarHeight = frostedAppBarHeight(context);
-    final topPadding = appBarHeight + Grid.xs;
+    final topPadding = appBarHeight + headerGap;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -421,6 +432,7 @@ class ProfileAvatarEditor extends HookConsumerWidget {
                   onPrepareChanged: onAnimatedPrepareChanged,
                 ) ??
                 AnimatedAvatarCapture(
+                  previewKey: previewKey,
                   height: modeHeight,
                   onPrepareChanged: onAnimatedPrepareChanged,
                   disposalBarrier: cameraDisposal.value,
@@ -506,7 +518,10 @@ class ProfileAvatarEditor extends HookConsumerWidget {
                 child: Center(
                   child: AnimatedBuilder(
                     animation: curvedEntrance,
-                    child: fixedPreview,
+                    child: Opacity(
+                      opacity: previewOpacity,
+                      child: KeyedSubtree(key: previewKey, child: fixedPreview),
+                    ),
                     builder: (context, child) {
                       final progress = curvedEntrance.value;
                       return Transform.translate(
@@ -703,7 +718,7 @@ class _ImageMode extends StatelessWidget {
             Expanded(
               child: _ImageSourceOption(
                 key: const ValueKey('image-source-camera'),
-                icon: LucideIcons.camera,
+                icon: BuzzIcons.camera,
                 iosIcon: IosGlassNavigationIcon.camera,
                 label: 'Camera',
                 onTap: isPicking ? null : onCamera,
@@ -714,7 +729,7 @@ class _ImageMode extends StatelessWidget {
             Expanded(
               child: _ImageSourceOption(
                 key: const ValueKey('image-source-library'),
-                icon: LucideIcons.images,
+                icon: BuzzIcons.images,
                 iosIcon: IosGlassNavigationIcon.photoLibrary,
                 label: 'Photo Library',
                 onTap: isPicking ? null : onLibrary,

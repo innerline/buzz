@@ -6,7 +6,7 @@ mod help_tree;
 mod links;
 mod validate;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use client::BuzzClient;
 use error::CliError;
 use nostr::Keys;
@@ -93,7 +93,27 @@ where
     S: Into<std::ffi::OsString> + Clone,
 {
     let matches = build_command().try_get_matches_from(args)?;
-    Cli::from_arg_matches(&matches)
+    let mut cli = Cli::from_arg_matches(&matches)?;
+    if matches.value_source("format") == Some(clap::parser::ValueSource::DefaultValue) {
+        cli.format = env_output_format(std::env::var_os("BUZZ_OUTPUT_FORMAT").as_deref());
+    }
+    Ok(cli)
+}
+
+/// `BUZZ_OUTPUT_FORMAT` only picks the default `--format`, so an empty or
+/// unknown value (e.g. one a newer harness sets) falls back to `json` rather
+/// than failing every command, writes included.
+fn env_output_format(value: Option<&std::ffi::OsStr>) -> OutputFormat {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return OutputFormat::default();
+    };
+    value
+        .to_str()
+        .and_then(|value| OutputFormat::from_str(value, false).ok())
+        .unwrap_or_else(|| {
+            eprintln!("warning: ignoring unsupported BUZZ_OUTPUT_FORMAT={value:?}; using json");
+            OutputFormat::default()
+        })
 }
 
 #[derive(Parser)]
@@ -107,6 +127,7 @@ Configuration (flags override env vars):
   BUZZ_RELAY_URL     Relay base URL        [default: http://localhost:3000]
   BUZZ_PRIVATE_KEY   Nostr private key (hex or nsec)  [required]
   BUZZ_AUTH_TAG      NIP-OA auth tag JSON  [optional]
+  BUZZ_OUTPUT_FORMAT Default --format; unknown values fall back to json  [optional]
 
 The 'pack' subcommand runs locally and does not require a relay connection.
 
@@ -126,7 +147,9 @@ struct Cli {
     #[arg(long, env = "BUZZ_AUTH_TAG", hide_env_values = true)]
     auth_tag: Option<String>,
 
-    /// Output format: 'json' (default, full fields) or 'compact' (reduced fields).
+    /// Output format: 'json' (default, full fields), 'compact' (reduced fields),
+    /// or 'agent' (event reads without signature material). Defaults to
+    /// `BUZZ_OUTPUT_FORMAT` when that names a known format.
     #[arg(long, value_enum, default_value = "json")]
     format: OutputFormat,
 
@@ -164,6 +187,27 @@ impl std::fmt::Display for ChannelVisibility {
         match self {
             Self::Open => write!(f, "open"),
             Self::Private => write!(f, "private"),
+        }
+    }
+}
+
+/// The role a new person gets in a channel (`join_role`).
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum ChannelJoinRoleArg {
+    /// New people become members (default).
+    #[value(name = "member")]
+    Member,
+    /// New people become guests, who can read but not write. On an open
+    /// channel this makes an announce channel.
+    #[value(name = "guest")]
+    Guest,
+}
+
+impl From<ChannelJoinRoleArg> for buzz_sdk::ChannelJoinRole {
+    fn from(value: ChannelJoinRoleArg) -> Self {
+        match value {
+            ChannelJoinRoleArg::Member => Self::Member,
+            ChannelJoinRoleArg::Guest => Self::Guest,
         }
     }
 }
@@ -206,6 +250,12 @@ pub enum OutputFormat {
     /// Reduced fields for agent scanning
     #[value(name = "compact")]
     Compact,
+    /// Event reads drop signature material (`sig`, NIP-OA `auth` conditions and
+    /// signature) and fold NIP-10 thread markers into `reply_to`/`thread_root`;
+    /// other reads match `json`.
+    /// Default for harness-managed agents.
+    #[value(name = "agent")]
+    Agent,
 }
 
 #[derive(Subcommand)]
@@ -642,9 +692,9 @@ pub enum ChannelsCmd {
         #[arg(long, value_name = "PATH")]
         templates_file: Option<String>,
     },
-    /// Update channel name, description, visibility, or ephemeral TTL
+    /// Update channel name, description, visibility, join role, or ephemeral TTL
     #[command(
-        after_help = "Examples:\n  buzz channels update --channel <uuid> --name general\n  buzz channels update --channel <uuid> --visibility open\n  buzz channels update --channel <uuid> --visibility private"
+        after_help = "Examples:\n  buzz channels update --channel <uuid> --name general\n  buzz channels update --channel <uuid> --visibility open\n  buzz channels update --channel <uuid> --visibility private\n  buzz channels update --channel <uuid> --join-role guest"
     )]
     Update {
         /// Channel UUID
@@ -666,6 +716,11 @@ pub enum ChannelsCmd {
         /// Clear an existing TTL, making the channel permanent.
         #[arg(long)]
         no_ttl: bool,
+        /// The role a new person gets when nobody picks one. `guest` on an
+        /// open channel makes an announce channel: people who join can read
+        /// but not write. Does not change existing members. Owner/admin only.
+        #[arg(long, value_enum)]
+        join_role: Option<ChannelJoinRoleArg>,
     },
     /// Set the channel topic
     Topic {
@@ -760,6 +815,10 @@ pub enum CanvasCmd {
         /// Channel UUID
         #[arg(long)]
         channel: String,
+        /// Fetch a specific historical revision by event ID (64-char hex);
+        /// defaults to the current head
+        #[arg(long)]
+        revision: Option<String>,
     },
     /// Set (replace) the canvas document for a channel
     Set {
@@ -769,6 +828,24 @@ pub enum CanvasCmd {
         /// Canvas content (markdown; use '-' to read from stdin)
         #[arg(long)]
         content: String,
+    },
+    /// List canvas revision history for a channel, newest first
+    History {
+        /// Channel UUID
+        #[arg(long)]
+        channel: String,
+        /// Maximum number of revisions to return (1–10000)
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        limit: u32,
+    },
+    /// Restore the canvas to a previous revision by re-publishing its content
+    Restore {
+        /// Channel UUID
+        #[arg(long)]
+        channel: String,
+        /// Revision event ID to restore (64-char hex)
+        #[arg(long)]
+        revision: String,
     },
 }
 
@@ -2250,6 +2327,24 @@ mod tests {
 
     /// Smoke test: CLI definition is valid and parseable.
     #[test]
+    fn output_format_env_is_a_lenient_default_but_the_flag_stays_strict() {
+        use std::ffi::OsStr;
+        assert!(matches!(env_output_format(None), OutputFormat::Json));
+        for ignored in ["", "agent-v2"] {
+            assert!(matches!(
+                env_output_format(Some(OsStr::new(ignored))),
+                OutputFormat::Json
+            ));
+        }
+        assert!(matches!(
+            env_output_format(Some(OsStr::new("agent"))),
+            OutputFormat::Agent
+        ));
+        assert!(parse_args(["buzz", "--format", "agent", "pack", "validate", "x"]).is_ok());
+        assert!(parse_args(["buzz", "--format", "agent-v2", "pack", "validate", "x"]).is_err());
+    }
+
+    #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
     }
@@ -2293,6 +2388,29 @@ mod tests {
             event.as_str(),
         ])
         .is_err());
+    }
+
+    /// `canvas history --limit` is bounded 1–10000 at parse time: zero and
+    /// max+1 reject, the maximum is accepted, and the max stays above one
+    /// 1,000-row relay page so the >1,000 pagination path remains reachable.
+    #[test]
+    fn canvas_history_limit_is_bounded() {
+        let channel = "123e4567-e89b-12d3-a456-426614174000";
+        let parse = |limit: &str| {
+            Cli::try_parse_from([
+                "buzz",
+                "canvas",
+                "history",
+                "--channel",
+                channel,
+                "--limit",
+                limit,
+            ])
+        };
+        assert!(parse("0").is_err(), "zero must reject");
+        assert!(parse("10001").is_err(), "max+1 must reject");
+        assert!(parse("10000").is_ok(), "maximum must be accepted");
+        assert!(parse("1000").is_ok(), "one relay page must be reachable");
     }
 
     #[test]
@@ -2430,7 +2548,10 @@ mod tests {
                 "update"
             ]
         );
-        assert_eq!(names(&cmd, "canvas"), vec!["get", "set"]);
+        assert_eq!(
+            names(&cmd, "canvas"),
+            vec!["get", "history", "restore", "set"]
+        );
         assert_eq!(names(&cmd, "reactions"), vec!["add", "get", "remove"]);
         assert_eq!(
             names(&cmd, "emoji"),
@@ -2534,7 +2655,7 @@ mod tests {
     fn subcommand_counts_are_stable() {
         let expected: Vec<(&str, usize)> = vec![
             ("agents", 5),
-            ("canvas", 2),
+            ("canvas", 4),
             ("channels", 16),
             ("dms", 4),
             ("emoji", 5),

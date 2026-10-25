@@ -122,7 +122,7 @@ void main() {
     });
 
     test(
-      'push notifications default off and opt-in survives restart',
+      'push notifications default on and opt-out survives restart',
       () async {
         container = createContainer();
         await container.read(communityListProvider.future);
@@ -137,12 +137,12 @@ void main() {
           (await container.read(
             communityListProvider.future,
           )).single.pushNotificationsEnabled,
-          isFalse,
+          isTrue,
         );
 
         await container
             .read(communityListProvider.notifier)
-            .setPushNotificationsEnabled(community.id, true);
+            .setPushNotificationsEnabled(community.id, false);
         container.dispose();
         container = createContainer();
 
@@ -150,7 +150,7 @@ void main() {
           (await container.read(
             communityListProvider.future,
           )).single.pushNotificationsEnabled,
-          isTrue,
+          isFalse,
         );
       },
     );
@@ -686,6 +686,19 @@ void main() {
       expect(active.name, 'Test');
     });
 
+    test('falls back without persisting when active ID is missing', () async {
+      final community = Community.create(
+        name: 'Fallback',
+        relayUrl: 'https://test.example.com',
+      );
+      await communityStorage.save(community);
+      container = createContainer();
+
+      final active = await container.read(activeCommunityProvider.future);
+      expect(active?.id, community.id);
+      expect(await communityStorage.loadActiveId(), isNull);
+    });
+
     test('falls back to first community if active ID is invalid', () async {
       container = createContainer();
       await container.read(communityListProvider.future);
@@ -705,6 +718,7 @@ void main() {
       final active = await container.read(activeCommunityProvider.future);
       expect(active, isNotNull);
       expect(active!.id, ws.id);
+      expect(await communityStorage.loadActiveId(), 'nonexistent-id');
     });
   });
 }
