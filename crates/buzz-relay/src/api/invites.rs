@@ -247,7 +247,13 @@ async fn authenticate(
             )
         })?;
 
-    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, path);
+    let url = bridge::nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        path,
+        &state.config.nip42_alt_relay_urls,
+        headers,
+    );
     let bridge::VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
@@ -301,7 +307,13 @@ async fn mint_invite_checked(
         .into_response();
     };
 
-    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, "/api/invites");
+    let url = bridge::nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        "/api/invites",
+        &state.config.nip42_alt_relay_urls,
+        &headers,
+    );
 
     // NIP-FI admission: NIP-98 extraction runs inside the closure, followed by
     // assertion verify → pair → deny-map in fixed order. The proven pubkey is

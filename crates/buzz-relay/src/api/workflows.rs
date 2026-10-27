@@ -60,7 +60,13 @@ async fn authorize_workflow_read(
         })?;
 
     let path_with_query = request_path(path, raw_query);
-    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, &path_with_query);
+    let url = bridge::nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        &path_with_query,
+        &state.config.nip42_alt_relay_urls,
+        headers,
+    );
     // In NIP-FI enforce/deny-protected mode a real NIP-98 event is mandatory —
     // the X-Pubkey dev-mode fallback must never satisfy the pairing requirement.
     // [NIP-FI.md:594-607, FI-TRACE-HTTP-INGRESS]

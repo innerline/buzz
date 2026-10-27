@@ -95,7 +95,13 @@ pub(super) async fn authorize(
         .path_and_query()
         .map(|p| p.as_str())
         .unwrap_or(uri.path());
-    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, path);
+    let url = bridge::nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        path,
+        &state.config.nip42_alt_relay_urls,
+        headers,
+    );
     // Private state always requires cryptographic identity, even on a dev relay.
     // NIP-FI admission owns NIP-98 extraction, assertion pairing and deny map.
     let admission = crate::nip_fi_http::admit_nip_fi_http_on_state(

@@ -227,7 +227,7 @@ pub fn verify_nip98_event(
 /// would pass against a `127.0.0.1`-resolved community (or vice versa) —
 /// a host-binding side door. Tests reconstruct `expected_url` from their
 /// own bound host, the same shape production does.
-fn normalize_url(raw: &str) -> String {
+pub fn normalize_url(raw: &str) -> String {
     let mut parsed = match Url::parse(raw) {
         Ok(u) => u,
         Err(_) => return raw.to_lowercase(),

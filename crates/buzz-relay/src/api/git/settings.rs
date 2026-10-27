@@ -170,7 +170,13 @@ async fn authenticate(
     let tenant = crate::nip_fi_shadow::bind_tenant(state, headers)
         .await
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "repository not found"))?;
-    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, path);
+    let url = bridge::nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        path,
+        &state.config.nip42_alt_relay_urls,
+        headers,
+    );
     let method = if body.is_some() { "POST" } else { "GET" };
     let require_payload = body.is_some();
 

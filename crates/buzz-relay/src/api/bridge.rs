@@ -49,7 +49,13 @@ pub(crate) async fn authenticate_member_post(
             .into_response()
         })?;
 
-    let expected_url = nip98_expected_url(&state.config.relay_url, &tenant, path);
+    let expected_url = nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        path,
+        &state.config.nip42_alt_relay_urls,
+        headers,
+    );
 
     // NIP-FI admission. [FI-TRACE-AUTHORITY-UNIFORM]
     let admission = admit_nip_fi_http_on_state(
@@ -459,6 +465,83 @@ pub(crate) fn nip42_select_relay_url(
         }
     }
     expected
+}
+
+/// Pick the `u`-tag URL a NIP-98 event should be verified against.
+///
+/// NIP-98 (HTTP auth) sibling of [`nip42_select_relay_url`]. Returns the
+/// strict expectation from [`nip98_expected_url`] (unchanged behavior) unless
+/// the event's signed `u` tag — after normalization — matches the same-path
+/// HTTP(S) mapping of one of the deployment's configured alternate front URLs
+/// ([`crate::config::Config::nip42_alt_relay_urls`]), in which case that exact
+/// URL is returned so verification compares like-for-like. This lets clients
+/// that reach the relay through a TLS-terminating front (signing the front's
+/// `https://host:port/path` URL) authenticate against the same relay that also
+/// serves direct `http://host:3000/path` lanes, without loosening the check for
+/// anyone else: an event signed for any URL not in the list still fails with
+/// `URL mismatch`, exactly as before.
+///
+/// The signed tag is peeked from the request's `Authorization: Nostr …`
+/// header. The peek only selects which expectation to verify against — the
+/// event's signature still binds the `u` tag, so a tampered tag fails
+/// verification regardless of which URL is selected.
+pub(crate) fn nip98_select_expected_url(
+    config_relay_url: &str,
+    tenant: &TenantContext,
+    path: &str,
+    alt_relay_urls: &[String],
+    headers: &HeaderMap,
+) -> String {
+    let expected = nip98_expected_url(config_relay_url, tenant, path);
+    let Some(signed) = signed_nip98_u_tag(headers) else {
+        return expected;
+    };
+    let signed_norm = buzz_auth::nip98::normalize_url(&signed);
+    for alt in alt_relay_urls {
+        let candidate = alt_front_http_url(alt, path);
+        if buzz_auth::nip98::normalize_url(&candidate) == signed_norm {
+            return candidate;
+        }
+    }
+    expected
+}
+
+/// Map a `ws://`/`wss://` front origin to the `http://`/`https://` origin a
+/// NIP-98 client signs for the same front, with [path] appended. Strips a
+/// trailing slash from the origin so `/path` never lands after `//`.
+fn alt_front_http_url(alt_relay_url: &str, path: &str) -> String {
+    let trimmed = alt_relay_url.trim();
+    let scheme = if trimmed.starts_with("wss://") {
+        "https"
+    } else {
+        "http"
+    };
+    let origin = trimmed
+        .strip_prefix("wss://")
+        .or_else(|| trimmed.strip_prefix("ws://"))
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    format!("{scheme}://{origin}{path}")
+}
+
+/// Extract the signed `u` tag from a request's NIP-98 Authorization header,
+/// without verifying it. `None` for absent/malformed headers — the caller then
+/// keeps the strict expectation and the verifier produces its own error.
+fn signed_nip98_u_tag(headers: &HeaderMap) -> Option<String> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    let auth = headers.get("authorization")?.to_str().ok()?;
+    let encoded = auth.strip_prefix("Nostr ")?;
+    let bytes = BASE64.decode(encoded).ok()?;
+    let event_json = String::from_utf8(bytes).ok()?;
+    let event: nostr::Event = serde_json::from_str(&event_json).ok()?;
+    event
+        .tags
+        .find(nostr::TagKind::SingleLetter(
+            nostr::SingleLetterTag::lowercase(nostr::Alphabet::U),
+        ))
+        .and_then(|t| t.content())
+        .map(str::to_string)
 }
 
 /// Extract a channel UUID from a single filter's `#h` tag.
@@ -1020,7 +1103,13 @@ pub async fn submit_event(
             .into_response()
         })?;
 
-    let url = nip98_expected_url(&state.config.relay_url, &tenant, "/events");
+    let url = nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        "/events",
+        &state.config.nip42_alt_relay_urls,
+        &headers,
+    );
     // In NIP-FI enforce/deny-protected mode, a real NIP-98 event is mandatory —
     // the X-Pubkey dev-mode fallback must never satisfy the pairing requirement.
     // [NIP-FI.md:594-607, FI-TRACE-HTTP-INGRESS]
@@ -1377,7 +1466,13 @@ pub async fn query_events(
             .into_response()
         })?;
 
-    let url = nip98_expected_url(&state.config.relay_url, &tenant, "/query");
+    let url = nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        "/query",
+        &state.config.nip42_alt_relay_urls,
+        &headers,
+    );
     // In NIP-FI enforce/deny-protected mode, a real NIP-98 event is mandatory.
     // [NIP-FI.md:594-607, FI-TRACE-HTTP-INGRESS]
     let nip_fi_active = state.config.nip_fi.mode.restricts();
@@ -2055,7 +2150,13 @@ pub async fn count_events(
             .into_response()
         })?;
 
-    let url = nip98_expected_url(&state.config.relay_url, &tenant, "/count");
+    let url = nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        "/count",
+        &state.config.nip42_alt_relay_urls,
+        &headers,
+    );
     // In NIP-FI enforce/deny-protected mode, a real NIP-98 event is mandatory.
     // [NIP-FI.md:594-607, FI-TRACE-HTTP-INGRESS]
     let nip_fi_active = state.config.nip_fi.mode.restricts();
@@ -2903,7 +3004,13 @@ async fn authorize_moderation_read(
         Some(q) if !q.is_empty() => format!("{path}?{q}"),
         _ => path.to_string(),
     };
-    let url = nip98_expected_url(&state.config.relay_url, &tenant, &path_with_query);
+    let url = nip98_select_expected_url(
+        &state.config.relay_url,
+        &tenant,
+        &path_with_query,
+        &state.config.nip42_alt_relay_urls,
+        headers,
+    );
     // In NIP-FI enforce/deny-protected mode a real NIP-98 event is mandatory —
     // the X-Pubkey dev-mode fallback must never satisfy the pairing requirement.
     // [NIP-FI.md:594-607, FI-TRACE-HTTP-INGRESS]
@@ -3993,6 +4100,143 @@ pub(crate) mod postgres_tests {
                 Some("ws://host-a.example:3000")
             ),
             "ws://host-a.example:3000"
+        );
+    }
+
+    /// `nip98_select_expected_url` returns the same-path HTTP(S) mapping of a
+    /// configured alternate front when the signed `u` tag names it, and the
+    /// strict expectation in every other case — the mobile-front scenario
+    /// (`https://front:8443/query` tag on an `http://…:3000` deployment), plus
+    /// the no-ops (no header, empty list, unknown front, different path).
+    #[test]
+    fn nip98_select_expected_url_prefers_matching_alternate_front() {
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine as _;
+
+        let tenant = fresh_tenant("host-a.example:3000");
+        let alts = vec!["wss://front.example:8443".to_string()];
+        let keys = Keys::generate();
+
+        let headers_with_u_tag = |url: &str| {
+            let event = EventBuilder::new(Kind::HttpAuth, "")
+                .tags(vec![
+                    Tag::parse(["u", url]).unwrap(),
+                    Tag::parse(["method", "POST"]).unwrap(),
+                ])
+                .sign_with_keys(&keys)
+                .expect("sign nip98 event");
+            let json = serde_json::to_string(&event).unwrap();
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "authorization",
+                format!("Nostr {}", BASE64.encode(json))
+                    .parse()
+                    .expect("header value"),
+            );
+            headers
+        };
+
+        // Signed u tag names the configured front (with the request path).
+        assert_eq!(
+            nip98_select_expected_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                "/query",
+                &alts,
+                &headers_with_u_tag("https://front.example:8443/query")
+            ),
+            "https://front.example:8443/query",
+            "u tag naming a configured front must verify against that front"
+        );
+
+        // Trailing slash on the signed path normalizes to the same match.
+        assert_eq!(
+            nip98_select_expected_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                "/query",
+                &alts,
+                &headers_with_u_tag("https://front.example:8443/query/")
+            ),
+            "https://front.example:8443/query"
+        );
+
+        // Front configured with ws:// maps to http:// for the candidate.
+        let ws_alts = vec!["ws://front.example:8443".to_string()];
+        assert_eq!(
+            nip98_select_expected_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                "/events",
+                &ws_alts,
+                &headers_with_u_tag("http://front.example:8443/events")
+            ),
+            "http://front.example:8443/events"
+        );
+
+        // No Authorization header → strict expectation.
+        assert_eq!(
+            nip98_select_expected_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                "/query",
+                &alts,
+                &HeaderMap::new()
+            ),
+            "http://host-a.example:3000/query"
+        );
+
+        // Header that is not a NIP-98 event → strict expectation.
+        let mut garbage = HeaderMap::new();
+        garbage.insert("authorization", "Nostr bm90LWpzb24=".parse().unwrap());
+        assert_eq!(
+            nip98_select_expected_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                "/query",
+                &alts,
+                &garbage
+            ),
+            "http://host-a.example:3000/query"
+        );
+
+        // Signed u tag names a URL that is NOT configured → strict expectation.
+        assert_eq!(
+            nip98_select_expected_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                "/query",
+                &alts,
+                &headers_with_u_tag("https://other-relay.example/query")
+            ),
+            "http://host-a.example:3000/query",
+            "unknown front must NOT be accepted"
+        );
+
+        // Front matches but the signed path differs → strict expectation.
+        assert_eq!(
+            nip98_select_expected_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                "/query",
+                &alts,
+                &headers_with_u_tag("https://front.example:8443/events")
+            ),
+            "http://host-a.example:3000/query",
+            "front with a different path must NOT be accepted"
+        );
+
+        // Empty alternate list → strict expectation even for the front URL.
+        assert_eq!(
+            nip98_select_expected_url(
+                "ws://host-a.example:3000",
+                &tenant,
+                "/query",
+                &[],
+                &headers_with_u_tag("https://front.example:8443/query")
+            ),
+            "http://host-a.example:3000/query",
+            "no configured fronts → behavior byte-identical to before"
         );
     }
 

@@ -171,8 +171,9 @@ pub struct Config {
     /// Public WebSocket URL of the dedicated device-pairing relay, when configured.
     pub pairing_relay_url: Option<String>,
     /// Alternate public front URLs (`BUZZ_NIP42_ALT_RELAY_URLS`) accepted for
-    /// the NIP-42 AUTH `relay`-tag comparison. Each entry must be a URL this
-    /// same deployment answers on (e.g. a TLS front). Empty by default.
+    /// the NIP-42 AUTH `relay`-tag and NIP-98 HTTP-auth `u`-tag comparisons.
+    /// Each entry must be a URL this same deployment answers on (e.g. a TLS
+    /// front). Empty by default.
     pub nip42_alt_relay_urls: Vec<String>,
     /// Maximum number of concurrent WebSocket connections.
     pub max_connections: usize,
