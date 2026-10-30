@@ -77,9 +77,7 @@ pub(crate) fn lock_env_mutex() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub use backend::*;
-pub(crate) use client_mode::{
-    client_only_enabled, client_only_refusal, CLIENT_ONLY_ERROR_PREFIX, CLIENT_ONLY_MARKER,
-};
+pub(crate) use client_mode::{client_only_enabled, client_only_refusal};
 pub(crate) use definition_validation::{
     validate_agent_definition_text, validate_agent_description_text,
     validate_managed_agent_definition_text, validate_visible_text,

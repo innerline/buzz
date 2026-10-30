@@ -53,7 +53,11 @@ async fn restore_on_a_client_only_install_spawns_nothing() {
     let test = app_with_keyless_agent();
     let dir = test.app.path().app_data_dir().unwrap();
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(crate::managed_agents::CLIENT_ONLY_MARKER), b"").unwrap();
+    std::fs::write(
+        dir.join(crate::managed_agents::client_mode::CLIENT_ONLY_MARKER),
+        b"",
+    )
+    .unwrap();
     let restore = launch_restore_task(test.app.handle().clone(), |_, _| {});
     restore.await.unwrap();
     assert_eq!(last_error(&test), None);

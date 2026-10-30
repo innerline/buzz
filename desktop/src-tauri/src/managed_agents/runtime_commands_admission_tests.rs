@@ -45,7 +45,7 @@ fn start_pair_refuses_a_removed_relay_until_readded() {
 /// Writes the client-only marker into the fixture's app data dir (the temp
 /// dir substituted for the identifier), flipping the install to client-only.
 fn write_client_only_marker(test: &TestApp) {
-    use crate::managed_agents::CLIENT_ONLY_MARKER;
+    use crate::managed_agents::client_mode::CLIENT_ONLY_MARKER;
     let dir = test.app.path().app_data_dir().unwrap();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(CLIENT_ONLY_MARKER), b"").unwrap();
