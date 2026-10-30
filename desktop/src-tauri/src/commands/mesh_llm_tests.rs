@@ -530,3 +530,138 @@ fn ensure_serve_runtime_serves_other_model() {
         .join()
         .expect("mesh acceptance thread panicked");
 }
+
+/// Client-only refusals for the mesh-runtime entries outside
+/// `mesh_start_node`: a client-only install must start no mesh runtime at
+/// all — not a Serve runtime (Share Compute restore), and not a client
+/// runtime either (even a client binds :9337/:3131).
+mod client_only_mesh_refusal_tests {
+    use super::*;
+    use crate::managed_agents::client_mode::{CLIENT_ONLY_ERROR_PREFIX, CLIENT_ONLY_MARKER};
+    use tauri::Manager;
+
+    /// Mock app whose app data dir is a fresh temp dir (same trick as
+    /// `admission_test_support` and `client_mode`'s own tests), with the
+    /// real `AppState` managed and the client-only marker written.
+    /// Returns the temp dir: dropping it deletes the dir the app handle
+    /// still points at, so tests drop it last.
+    fn client_only_app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
+        let data = tempfile::tempdir().unwrap();
+        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+        // An absolute identifier replaces the app data base dir.
+        context.config_mut().identifier = data.path().to_str().unwrap().to_owned();
+        let app = tauri::test::mock_builder()
+            .manage(build_app_state())
+            .build(context)
+            .unwrap();
+        let dir = app.path().app_data_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(CLIENT_ONLY_MARKER), b"").unwrap();
+        (app, data)
+    }
+
+    /// A persisted enabled Share Compute configuration — exactly the state
+    /// whose authoritative-role restore branch used to start a Serve
+    /// runtime here without passing any gate.
+    fn save_enabled_sharing_config(app: &tauri::App<tauri::test::MockRuntime>) {
+        save_mesh_sharing_config(
+            app.handle(),
+            &MeshSharingConfig {
+                enabled: true,
+                start_on_next_launch: false,
+                model_id: "test-model".to_string(),
+                max_vram_gb: Some(24),
+                relay_url: None,
+            },
+        )
+        .unwrap();
+    }
+
+    /// Removing the gate flips this test: without it, the persisted-config
+    /// branch restores a Serve runtime and the error (if any) comes from
+    /// mesh startup, not the client-only prefix.
+    #[tokio::test]
+    async fn ensure_relay_mesh_for_record_refuses_a_client_only_install() {
+        let (app, _data) = client_only_app();
+        save_enabled_sharing_config(&app);
+        let state = app.state::<AppState>();
+
+        let error = ensure_relay_mesh_for_record(app.handle(), Some("test-model"), false)
+            .await
+            .expect_err("client-only install must refuse every mesh-runtime start");
+        assert!(
+            error.starts_with(CLIENT_ONLY_ERROR_PREFIX),
+            "wrong refusal: {error}"
+        );
+        assert!(
+            state.mesh_llm_runtime.lock().await.is_none(),
+            "no mesh runtime may exist after the refusal"
+        );
+    }
+
+    /// Belt-and-braces: the ensure gate is the caller-facing check, but this
+    /// function starts a Serve runtime directly, so it refuses by contract
+    /// even against future callers that bypass `ensure_relay_mesh_for_record`.
+    #[tokio::test]
+    async fn restore_mesh_sharing_refuses_a_client_only_install() {
+        let (app, _data) = client_only_app();
+        save_enabled_sharing_config(&app);
+        let state = app.state::<AppState>();
+
+        let error = restore_mesh_sharing(app.handle(), state.inner())
+            .await
+            .expect_err("client-only install must refuse Share Compute restore");
+        assert!(
+            error.starts_with(CLIENT_ONLY_ERROR_PREFIX),
+            "wrong refusal: {error}"
+        );
+        assert!(
+            state.mesh_llm_runtime.lock().await.is_none(),
+            "no mesh runtime may exist after the refusal"
+        );
+    }
+}
+
+// --- client-only gates (see managed_agents::client_mode) ---------------------
+
+/// Mock app whose app data dir is a fresh temp dir (the identifier trick
+/// from `admission_test_support`), so the mesh-sharing config and the
+/// client-only marker never leak between tests.
+fn mesh_app_with_temp_data_dir() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
+    let data = tempfile::tempdir().unwrap();
+    let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+    context.config_mut().identifier = data.path().to_str().unwrap().to_owned();
+    let app = tauri::test::mock_builder().build(context).unwrap();
+    app.manage(build_app_state());
+    (app, data)
+}
+
+fn write_client_only_marker(app: &tauri::App<tauri::test::MockRuntime>) {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(crate::managed_agents::client_mode::CLIENT_ONLY_MARKER),
+        b"",
+    )
+    .unwrap();
+}
+
+/// `ensure_relay_mesh_for_record` refuses before ANY mesh work on a
+/// client-only install - no serve restore, no client-mode runtime, nothing
+/// that binds :9337/:3131. Deleting the gate flips this to the cold-preflight
+/// target error (or worse, a real client start).
+#[tokio::test]
+async fn relay_mesh_preflight_refuses_on_a_client_only_install() {
+    let (app, _data) = mesh_app_with_temp_data_dir();
+    write_client_only_marker(&app);
+    let error = ensure_relay_mesh_for_record(app.handle(), Some("demo/model"), false)
+        .await
+        .expect_err("client-only installs refuse every local mesh start");
+    assert!(
+        error.starts_with(crate::managed_agents::client_mode::CLIENT_ONLY_ERROR_PREFIX),
+        "{error}"
+    );
+    let state = app.state::<crate::app_state::AppState>();
+    assert!(state.mesh_llm_runtime.lock().await.is_none());
+}

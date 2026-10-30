@@ -46,8 +46,10 @@ async fn restore_scheduled_with_no_removal_reaches_spawn() {
 /// On a client-only install, restore's candidate filter removes every
 /// auto-start agent before Phase B, so nothing is spawned and no start error
 /// is recorded (the untracked-process sweeps still run). Deleting the
-/// client-only filter from `restore_managed_agents_on_launch` flips this to
-/// the key-refusal error and fails the test.
+/// client-only filter from `restore_managed_agents_on_launch` reaches
+/// `spawn_agent_child`, whose own client-only gate refuses before key
+/// admission, so the recorded error is the client-only refusal — the test
+/// fails either way, and the mutation proves both seams.
 #[tokio::test]
 async fn restore_on_a_client_only_install_spawns_nothing() {
     let test = app_with_keyless_agent();

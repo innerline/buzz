@@ -22,11 +22,12 @@
 //!
 //! Non-goals: this gate covers Buzz-owned work only - managed-agent engine
 //! spawns, the mesh (Share Compute) coordinator, Share Compute restore, and
-//! the `mesh_start_node` command (the only entry to serving, client or
-//! serve mode). It does not touch other applications or the engines they
-//! spawn (e.g. Obsidian Copilot), and it does not gate one-shot, time-boxed
-//! CLI probes (`invoke_provider` and discovery), which start no persistent
-//! engine.
+//! every local mesh-runtime start: the `mesh_start_node` command (serving
+//! or client mode), `ensure_relay_mesh_for_record` (serve restore and the
+//! client fallback), and `restore_mesh_sharing`. It does not touch other
+//! applications or the engines they spawn (e.g. Obsidian Copilot), and it
+//! does not gate one-shot, time-boxed CLI probes (`invoke_provider` and
+//! discovery), which start no persistent engine.
 //! The desktop app never starts a relay process - no relay binary ships in
 //! `externalBin`; the relay is a standalone service - so a client-only
 //! install binds no relay port by construction.
@@ -173,5 +174,22 @@ mod tests {
         let _guard = EnvGuard(CLIENT_ONLY_ENV_VAR);
         std::env::set_var(CLIENT_ONLY_ENV_VAR, "maybe");
         assert!(!client_only_enabled(app.handle()));
+    }
+
+    #[test]
+    fn unparseable_env_value_leaves_the_marker_in_charge() {
+        // Marker present + unparseable env: the env value is ignored, so the
+        // marker decides and the install is client-only.
+        let (app, _data) = app_with_temp_data_dir();
+        write_marker(&app);
+        let _env = lock_env_mutex();
+        let _guard = EnvGuard(CLIENT_ONLY_ENV_VAR);
+        std::env::set_var(CLIENT_ONLY_ENV_VAR, "maybe");
+        assert!(client_only_enabled(app.handle()));
+        let refusal = client_only_refusal(app.handle()).unwrap();
+        assert!(
+            refusal.starts_with(super::CLIENT_ONLY_ERROR_PREFIX),
+            "{refusal}"
+        );
     }
 }

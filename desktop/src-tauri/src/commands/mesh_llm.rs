@@ -346,6 +346,17 @@ pub(crate) async fn restore_mesh_sharing<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &AppState,
 ) -> CmdResult<()> {
+    // Client-only installs never host Share Compute (see
+    // `managed_agents::client_mode`): this function starts a Serve runtime
+    // directly, so it refuses by contract instead of trusting every caller
+    // to check `client_only_enabled` first — the gate covers EVERY caller
+    // (workspace apply, and the persisted-config branch of
+    // `ensure_relay_mesh_for_record`), not just the launch path. The skip
+    // message tells the nightly digest "gate worked" apart from "app broken".
+    if let Some(error) = crate::managed_agents::client_only_refusal(app) {
+        eprintln!("buzz-desktop: {error}");
+        return Err(error);
+    }
     let Some(mut config) = load_mesh_sharing_config(app)? else {
         return Ok(());
     };
@@ -419,9 +430,10 @@ pub async fn mesh_start_node(
     // Client-only installs never host Share Compute (see
     // `managed_agents::client_mode`): serving binds :9337/:3131 and runs
     // compute for others, and even a client runtime spawns a process with
-    // listeners. This command is the only entry to serving — both
-    // `restart_to_share` call sites live inside it — so one refusal here
-    // covers every mode.
+    // listeners. This command is one of three gated mesh-runtime entries —
+    // `ensure_relay_mesh_for_record` and `restore_mesh_sharing` carry the
+    // same refusal — and both `restart_to_share` call sites live inside it,
+    // so one refusal here covers every UI start mode.
     if let Some(error) = crate::managed_agents::client_only_refusal(&app) {
         eprintln!("buzz-desktop: {error}");
         return Err(error);
@@ -701,6 +713,18 @@ pub(crate) async fn ensure_relay_mesh_for_record<R: tauri::Runtime>(
     model_id: Option<&str>,
     _allow_fresh_create_start: bool,
 ) -> Result<(), String> {
+    // Client-only installs start NO mesh runtime in any mode (see
+    // `managed_agents::client_mode`): the persisted-config branch below
+    // starts a Serve runtime via `restore_mesh_sharing`, the client fallback
+    // starts a client runtime, and even a client runtime binds :9337/:3131.
+    // This is the seam every agent-driven mesh start funnels through —
+    // model resolve, agent start, launch-restore preflight, recovery re-arm
+    // — so one refusal here closes the last path that could start compute
+    // locally, before any state is read or started.
+    if let Some(error) = crate::managed_agents::client_only_refusal(app) {
+        eprintln!("buzz-desktop: {error}");
+        return Err(error);
+    }
     let state = app.state::<AppState>();
     let Some(model_id) = model_id else {
         return Ok(());
