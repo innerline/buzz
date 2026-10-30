@@ -323,6 +323,14 @@ pub struct Config {
     pub media_max_concurrent_uploads_per_pubkey: u32,
     /// Maximum media upload starts accepted from one pubkey per minute.
     pub media_uploads_per_minute: u32,
+    /// Opt-in escape hatch: serve GET/HEAD `/media/*` without per-request
+    /// auth. Intended for network-restricted deployments (e.g. a relay bound
+    /// to a private tailnet) whose human clients cannot attach Blossom auth
+    /// headers to `<img>` loads — the exact case that renders every chat
+    /// image blank behind a 401. Defaults to false; uploads and every other
+    /// route still require auth regardless of this flag. Tenant binding from
+    /// the request Host stays fail-closed.
+    pub media_allow_unauthenticated_reads: bool,
 
     /// Whether tamper-evident event/media audit logging is enabled. Defaults to true.
     /// This does not control the separate `moderation_actions` audit trail.
@@ -1077,6 +1085,19 @@ impl Config {
             );
         }
 
+        let media_allow_unauthenticated_reads =
+            std::env::var("BUZZ_MEDIA_ALLOW_UNAUTHENTICATED_READS")
+                .ok()
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false);
+        if media_allow_unauthenticated_reads {
+            warn!(
+                "BUZZ_MEDIA_ALLOW_UNAUTHENTICATED_READS=true — GET/HEAD /media/* are served \
+                 WITHOUT per-request auth on this relay. Only safe on a network-restricted \
+                 deployment (tailnet/VPN-only). Uploads still require Blossom auth."
+            );
+        }
+
         let ephemeral_ttl_override = std::env::var("BUZZ_EPHEMERAL_TTL_OVERRIDE")
             .ok()
             .and_then(|v| v.parse::<i32>().ok())
@@ -1478,6 +1499,7 @@ impl Config {
             media_max_concurrent_uploads,
             media_max_concurrent_uploads_per_pubkey,
             media_uploads_per_minute,
+            media_allow_unauthenticated_reads,
             audit_enabled,
             ephemeral_ttl_override,
             git_repo_path,

@@ -806,6 +806,15 @@ pub(crate) async fn get_blob(
         .next()
         .unwrap_or(&sha256_ext)
         .to_owned();
+    // Opt-in public reads (BUZZ_MEDIA_ALLOW_UNAUTHENTICATED_READS): skip
+    // NIP-98 admission and the membership gate for blob GETs. Tenant binding
+    // above is still fail-closed, and the byte-serving path is identical to
+    // the authenticated one. Uploads are never affected by this flag.
+    if state.config.media_allow_unauthenticated_reads {
+        return serve_blob_for_tenant(&state, &tenant, &sha256_ext, &req_headers)
+            .await
+            .map_err(MediaDenial::from);
+    }
     let strictness = blossom_strictness_from_state(&state);
     let tenant_host = tenant.host().to_owned();
     let headers_clone = req_headers.clone();
@@ -1111,26 +1120,32 @@ pub(crate) async fn head_blob(
         .next()
         .unwrap_or(&sha256_ext)
         .to_owned();
-    let strictness = blossom_strictness_from_state(&state);
-    let tenant_host = tenant.host().to_owned();
-    let headers_clone = headers.clone();
-    use crate::nip_fi_http::admit_nip_fi_http_on_state;
-    crate::nip_fi_shadow::observe_strict_proof(&state, &headers, "blossom", || {
-        extract_blossom_read_proof(&headers, &sha256, &tenant_host, BlossomStrictness::Strict)
-            .map(drop)
-    })
-    .await;
-    let admission = match admit_nip_fi_http_on_state(&state, &headers, move || {
-        extract_blossom_read_proof(&headers_clone, &sha256, &tenant_host, strictness)
-            .map_err(|e| e.into_response())
-    })
-    .await
-    {
-        Ok(a) => a,
-        Err(resp) => return Ok(resp),
-    };
-    let auth_event = admission.into_extra();
-    enforce_blossom_read_membership(&state, &tenant, &auth_event, &headers, strictness).await?;
+    // Opt-in public reads (BUZZ_MEDIA_ALLOW_UNAUTHENTICATED_READS): skip
+    // NIP-98 admission and the membership gate for existence checks. The
+    // sidecar-gated serving logic below is unchanged and tenant binding
+    // above stays fail-closed.
+    if !state.config.media_allow_unauthenticated_reads {
+        let strictness = blossom_strictness_from_state(&state);
+        let tenant_host = tenant.host().to_owned();
+        let headers_clone = headers.clone();
+        use crate::nip_fi_http::admit_nip_fi_http_on_state;
+        crate::nip_fi_shadow::observe_strict_proof(&state, &headers, "blossom", || {
+            extract_blossom_read_proof(&headers, &sha256, &tenant_host, BlossomStrictness::Strict)
+                .map(drop)
+        })
+        .await;
+        let admission = match admit_nip_fi_http_on_state(&state, &headers, move || {
+            extract_blossom_read_proof(&headers_clone, &sha256, &tenant_host, strictness)
+                .map_err(|e| e.into_response())
+        })
+        .await
+        {
+            Ok(a) => a,
+            Err(resp) => return Ok(resp),
+        };
+        let auth_event = admission.into_extra();
+        enforce_blossom_read_membership(&state, &tenant, &auth_event, &headers, strictness).await?;
+    }
     let cache_control = blob_cache_control();
 
     // Sidecar gate FIRST — reject before any blob I/O.
@@ -2292,6 +2307,56 @@ mod tests {
             Some(Arc::new(state))
         }
 
+        /// Same as `media_off_test_state` but with the opt-in public-reads
+        /// flag enabled, exercising the BUZZ_MEDIA_ALLOW_UNAUTHENTICATED_READS
+        /// skip path in `get_blob`/`head_blob`.
+        async fn media_public_reads_test_state() -> Option<Arc<AppState>> {
+            let mut config = crate::config::Config::for_test();
+            config.database_url = crate::test_support::database_url();
+            config.redis_url =
+                std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+            config.relay_url = "wss://nip-fi-media-off.local".to_string();
+            config.require_auth_token = false;
+            config.require_relay_membership = false;
+            config.nip_fi.mode = NipFiMode::Off;
+            config.media_allow_unauthenticated_reads = true;
+
+            let pool = sqlx::PgPool::connect(&crate::test_support::database_url())
+                .await
+                .ok()?;
+            let db = buzz_db::Db::from_pool(pool.clone());
+            let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+                .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+                .ok()?;
+            let pubsub = Arc::new(
+                buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
+                    .await
+                    .ok()?,
+            );
+            let audit = buzz_audit::AuditService::new(pool.clone());
+            let auth = buzz_auth::AuthService::new(config.auth.clone());
+            let search = buzz_search::SearchService::new(pool.clone());
+            let workflow_engine = Arc::new(buzz_workflow::WorkflowEngine::new(
+                db.clone(),
+                buzz_workflow::WorkflowConfig::default(),
+            ));
+            let media_storage = buzz_media::MediaStorage::new(&config.media).ok()?;
+            let (mut state, _) = crate::state::AppState::new(
+                config,
+                db,
+                redis_pool,
+                audit,
+                pubsub,
+                auth,
+                search,
+                workflow_engine,
+                Keys::generate(),
+                media_storage,
+            );
+            state.nip98_replay = Arc::new(AlwaysFreshReplayGuard);
+            Some(Arc::new(state))
+        }
+
         /// Mint a valid Blossom upload auth header value.
         /// NIP-FI-compliant: 55s lifetime, single `server` tag.
         fn blossom_upload_auth_value(keys: &Keys, host: &str, sha256_hex: &str) -> String {
@@ -3091,6 +3156,47 @@ mod tests {
                 None,
                 b"",
                 "Off HEAD missing auth",
+            );
+        }
+
+        // ── Opt-in public reads (BUZZ_MEDIA_ALLOW_UNAUTHENTICATED_READS) ────
+        //
+        // With the flag on, GET/HEAD /media skip NIP-98 admission and the
+        // membership gate entirely: a missing blob answers the storage 404,
+        // not the auth 401. This is the storage-free discriminator — if the
+        // auth gate still ran, the status would be 401 regardless of whether
+        // the blob exists. Uploads are not covered by the flag and stay 401
+        // (pinned by the upload tests above).
+
+        /// Flag on + GET /media + no Authorization → storage 404, not 401.
+        #[test]
+        #[ignore = "requires Postgres"]
+        fn get_blob_public_reads_missing_auth_skips_auth_gate() {
+            let (rt, state, host) = media_fixture(media_public_reads_test_state());
+            let path = format!("/media/{}.jpg", "f".repeat(64));
+            assert_exact_response(
+                &media_read_off(&rt, &state, "GET", &path, &host, &[]),
+                StatusCode::NOT_FOUND,
+                "application/json",
+                None,
+                br#"{"error":"not found"}"#,
+                "Public-reads GET missing auth",
+            );
+        }
+
+        /// Flag on + HEAD /media + no Authorization → storage 404, not 401.
+        #[test]
+        #[ignore = "requires Postgres"]
+        fn head_blob_public_reads_missing_auth_skips_auth_gate() {
+            let (rt, state, host) = media_fixture(media_public_reads_test_state());
+            let path = format!("/media/{}.jpg", "f".repeat(64));
+            assert_exact_response(
+                &media_read_off(&rt, &state, "HEAD", &path, &host, &[]),
+                StatusCode::NOT_FOUND,
+                "application/json",
+                None,
+                b"",
+                "Public-reads HEAD missing auth",
             );
         }
 
