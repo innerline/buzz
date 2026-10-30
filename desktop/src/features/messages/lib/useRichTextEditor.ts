@@ -401,11 +401,17 @@ export function useRichTextEditor({
                 )(view, event as ClipboardEvent),
         },
         attributes: {
+          // Verbatim input: no spellcheck, autocorrect, or grammar layer may
+          // rewrite the owner's words before signing. 2026-10-30 word-flip
+          // bug: "don't" arrived as "do", inverting instructions.
           autocapitalize: "none",
           autocorrect: "off",
+          spellcheck: "false",
+          "data-gramm": "false",
+          "data-gramm_editor": "false",
+          "data-enable-grammarly": "false",
           class: `${MESSAGE_MARKDOWN_CLASS} min-h-0 resize-none overflow-y-hidden border-0 bg-transparent px-0 py-0 text-message font-normal tracking-normal text-foreground shadow-none focus-visible:ring-0 caret-foreground outline-hidden max-w-none`,
           "data-testid": "message-input",
-          spellcheck: "true",
         },
         // ArrowUp in an empty composer → edit your last message (Slack
         // parity). Handled here in ProseMirror's own DOM `keydown` hook —

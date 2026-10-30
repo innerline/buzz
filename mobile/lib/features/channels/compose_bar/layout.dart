@@ -328,6 +328,13 @@ class _ComposeBarLayout extends HookWidget {
       focusNode: focusNode,
       keyboardType: TextInputType.multiline,
       textInputAction: TextInputAction.newline,
+      // Verbatim input: nothing on the device may rewrite the owner's words
+      // before they are signed and sent. 2026-10-30 word-flip bug: OS
+      // autocorrect turned "don't" into "do", inverting instructions.
+      autocorrect: false,
+      enableSuggestions: false,
+      smartQuotesType: SmartQuotesType.disabled,
+      smartDashesType: SmartDashesType.disabled,
       contextMenuBuilder: contextMenuBuilder,
       // Flutter's Cupertino magnifier rebuilds its overlay on every
       // selection-handle update. Keep the iOS handles and native edit menu,
