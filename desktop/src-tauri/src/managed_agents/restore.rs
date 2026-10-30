@@ -1,8 +1,8 @@
 use super::{
-    bestie_assignment::recover_pending_assignment_cleanup, find_managed_agent_mut,
-    kill_stale_tracked_processes, load_managed_agents, load_personas, managed_agents_base_dir,
-    save_managed_agents, spawn_agent_child, sync_managed_agent_processes, BackendKind,
-    ManagedAgentProcess,
+    bestie_assignment::recover_pending_assignment_cleanup, client_only_enabled,
+    find_managed_agent_mut, kill_stale_tracked_processes, load_managed_agents, load_personas,
+    managed_agents_base_dir, save_managed_agents, spawn_agent_child, sync_managed_agent_processes,
+    BackendKind, ManagedAgentProcess,
 };
 use crate::app_state::AppState;
 use crate::util;
@@ -201,9 +201,23 @@ async fn restore_managed_agents_on_launch<R: tauri::Runtime>(
             .collect();
         sweeps(app, &tracked_pids);
 
+        // Client-only installs sweep but never spawn. Launch restore exists
+        // to re-create the engines this app was running when it closed —
+        // exactly what a client-only install must not do (see `client_mode`).
+        // The sweeps above still run: killing untracked engines is even more
+        // correct on a client that owns none, so a client relaunch cleans up
+        // leaked engines it finds.
+        let client_only = client_only_enabled(app);
+        if client_only {
+            eprintln!(
+                "buzz-desktop: client-only: skipping managed-agent restore (this install does not run agent engines)"
+            );
+        }
         let candidates: Vec<String> = records
             .iter()
-            .filter(|record| record.start_on_app_launch && record.backend == BackendKind::Local)
+            .filter(|record| {
+                !client_only && record.start_on_app_launch && record.backend == BackendKind::Local
+            })
             .map(|record| record.pubkey.clone())
             .collect();
 

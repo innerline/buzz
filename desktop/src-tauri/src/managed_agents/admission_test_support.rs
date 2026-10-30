@@ -56,3 +56,9 @@ pub fn refused(error: &str) -> bool {
 pub fn reached_spawn(error: &str) -> bool {
     error.contains("has no private key available")
 }
+
+/// A start error from `spawn_agent_child`'s client-only refusal: admission
+/// passed and the gate fired before any spawn side effect.
+pub fn client_refused(error: &str) -> bool {
+    error.starts_with(super::CLIENT_ONLY_ERROR_PREFIX)
+}

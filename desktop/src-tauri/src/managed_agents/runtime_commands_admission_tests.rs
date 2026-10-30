@@ -4,7 +4,7 @@
 use super::{restart_pair, start_pair};
 use crate::app_state::AppState;
 use crate::managed_agents::admission_test_support::{
-    app_with_keyless_agent, reached_spawn, refused, RELAY,
+    app_with_keyless_agent, client_refused, reached_spawn, refused, TestApp, RELAY,
 };
 use crate::managed_agents::{readd_relay, remove_relay, AdmissionSnapshot};
 use tauri::Manager;
@@ -40,6 +40,29 @@ fn start_pair_refuses_a_removed_relay_until_readded() {
         &test,
         &AdmissionSnapshot::capture(&state)
     )));
+}
+
+/// Writes the client-only marker into the fixture's app data dir (the temp
+/// dir substituted for the identifier), flipping the install to client-only.
+fn write_client_only_marker(test: &TestApp) {
+    use crate::managed_agents::CLIENT_ONLY_MARKER;
+    let dir = test.app.path().app_data_dir().unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(CLIENT_ONLY_MARKER), b"").unwrap();
+}
+
+/// The client-only gate fires at the production spawn seam: a start that
+/// passes admission dies at `spawn_agent_child` with the client-only refusal
+/// — ahead of even the key refusal — so no process ever begins. Deleting the
+/// gate from `spawn_agent_child` flips this to the key refusal and fails.
+#[test]
+fn start_pair_refuses_on_a_client_only_install_before_any_spawn() {
+    let test = app_with_keyless_agent();
+    write_client_only_marker(&test);
+    let state = test.app.state::<AppState>();
+    let error = start(&test, &AdmissionSnapshot::capture(&state));
+    assert!(client_refused(&error), "{error}");
+    assert!(!reached_spawn(&error), "{error}");
 }
 
 #[test]

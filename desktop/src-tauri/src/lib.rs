@@ -357,7 +357,18 @@ pub fn run() {
                 // Route mesh-llm's download progress (model weights, runtime)
                 // onto Tauri events so the UI can render real progress.
                 crate::mesh_llm::install_progress_sink(&app_handle);
-                tauri::async_runtime::spawn(crate::mesh_llm::start_coordinator(app_handle.clone()));
+                // Client-only installs never host shared compute: the
+                // coordinator publishes discovery and admits inbound peers,
+                // which is engine work (see `managed_agents::client_mode`).
+                if !crate::managed_agents::client_only_enabled(&app_handle) {
+                    tauri::async_runtime::spawn(crate::mesh_llm::start_coordinator(
+                        app_handle.clone(),
+                    ));
+                } else {
+                    eprintln!(
+                        "buzz-desktop: client-only: mesh Share Compute coordinator not started"
+                    );
+                }
             }
 
             // Start the localhost media streaming proxy. Uses the shared HTTP

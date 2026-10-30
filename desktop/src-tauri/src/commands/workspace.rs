@@ -379,10 +379,17 @@ pub async fn apply_workspace(
             let _restore_lock = restore_lock;
             let state = app.state::<AppState>();
             if restore_pending {
-                if let Err(error) =
-                    crate::commands::mesh_llm::restore_mesh_sharing(&app, &state).await
-                {
-                    eprintln!("buzz-desktop: failed to restore Share Compute: {error}");
+                // Client-only installs never host shared compute (see
+                // `managed_agents::client_mode`): restore must not
+                // resurrect a Share Compute offer.
+                if !crate::managed_agents::client_only_enabled(&app) {
+                    if let Err(error) =
+                        crate::commands::mesh_llm::restore_mesh_sharing(&app, &state).await
+                    {
+                        eprintln!("buzz-desktop: failed to restore Share Compute: {error}");
+                    }
+                } else {
+                    eprintln!("buzz-desktop: client-only: Share Compute restore skipped");
                 }
             }
             crate::mesh_llm::publish_current_status_once(&app, "workspace apply").await;

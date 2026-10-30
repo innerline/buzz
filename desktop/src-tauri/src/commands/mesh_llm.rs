@@ -416,6 +416,16 @@ pub async fn mesh_start_node(
     state: State<'_, AppState>,
     mut request: mesh_llm::StartMeshNodeRequest,
 ) -> CmdResult<mesh_llm::MeshNodeStatus> {
+    // Client-only installs never host Share Compute (see
+    // `managed_agents::client_mode`): serving binds :9337/:3131 and runs
+    // compute for others, and even a client runtime spawns a process with
+    // listeners. This command is the only entry to serving — both
+    // `restart_to_share` call sites live inside it — so one refusal here
+    // covers every mode.
+    if let Some(error) = crate::managed_agents::client_only_refusal(&app) {
+        eprintln!("buzz-desktop: {error}");
+        return Err(error);
+    }
     let relay_url = relay::relay_ws_url_with_override(&state);
     request.relay_url = Some(relay_url.clone());
     if let Some(model_id) = request.model_id.as_mut() {

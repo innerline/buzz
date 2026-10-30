@@ -6,10 +6,10 @@ use super::agent_env::idle_pool_sleep_env;
 
 use crate::{
     managed_agents::{
-        append_log_marker, known_acp_runtime, login_shell_path, managed_agent_log_path,
-        missing_command_message, normalize_agent_args, open_log_file, resolve_command,
-        spawn_key_refusal, KnownAcpRuntime, ManagedAgentPairRuntime, ManagedAgentRecord,
-        ManagedAgentRuntimeKey, ManagedAgentSummary,
+        append_log_marker, client_only_refusal, known_acp_runtime, login_shell_path,
+        managed_agent_log_path, missing_command_message, normalize_agent_args, open_log_file,
+        resolve_command, spawn_key_refusal, KnownAcpRuntime, ManagedAgentPairRuntime,
+        ManagedAgentRecord, ManagedAgentRuntimeKey, ManagedAgentSummary,
     },
     util::now_iso,
 };
@@ -490,6 +490,17 @@ pub fn spawn_agent_child<R: tauri::Runtime>(
     owner_hex: Option<&str>,
     replay_floor_unix: Option<u64>,
 ) -> Result<crate::managed_agents::ManagedAgentProcess, String> {
+    // Client-only installs never run agent engines — refuse before any log
+    // file or process side effect. This is the single choke point every spawn
+    // path funnels through (interactive start, launch restore, respawn), so a
+    // client-only install cannot regrow engines no matter what the caller is.
+    // See `client_mode`.
+    if let Some(error) = client_only_refusal(app) {
+        // One line per blocked spawn, so ops can tell "the gate worked"
+        // from "the app is broken" without digging for the UI error.
+        eprintln!("buzz-desktop: {error}");
+        return Err(error);
+    }
     admitted.covers(relay_url)?;
     if let Some(error) = spawn_key_refusal(record) {
         return Err(error);
